@@ -1,21 +1,20 @@
+import functools
 import json
 import os
-from typing import List
+from typing import List, Optional
 
 import dotenv
 import marko
 import openai
-from joblib import Memory
 from loguru import logger
 from marko.block import FencedCode
+import fire
 from tenacity import retry, stop_after_attempt, wait_random_exponential
-from utils import Model, cleanup_dylib, cmd
+
+from scripts.utils import Model, cleanup_dylib, cmd
 
 
 dotenv.load_dotenv()
-
-
-memory = Memory("cache", verbose=0)
 
 
 OPENAI_SYSTEM_PROMPT = """```
@@ -25,9 +24,9 @@ OPENAI_SYSTEM_PROMPT = """```
 Complete the above program. It should consist of a single markdown code block following on from the lines above until the end of the program. It should terminate with `GOBACK`."""
 
 
-@memory.cache
+@functools.lru_cache(maxsize=128)
 @retry(wait=wait_random_exponential(min=1, max=10), stop=stop_after_attempt(3))
-def chat(messages, model) -> str:
+def chat(messages: tuple, model: Model) -> str:
     response = openai.chat.completions.create(
         model=model.name,
         messages=messages,
@@ -118,8 +117,10 @@ class LLMGenerator:
 
                     self.total += 1
 
+                except (ValueError, KeyError, IOError) as e:
+                    logger.error(f"Error processing {e['entry_point'] if isinstance(e, dict) else 'task'}: {e}")
                 except Exception as e:
-                    logger.error(e)
+                    logger.error(f"Unexpected error: {type(e).__name__}: {e}")
 
         with open(f"{self.output_path}/samples.jsonl", "w+") as f:
             for s in self.samples:
@@ -171,7 +172,7 @@ class JsonComplete(LLMGenerator):
             e["id"] = i
 
         if self.model.samples_per_task > 1:
-            self.completions = [[] * self.model.samples_per_task]
+            self.completions = []
             for k in range(self.model.samples_per_task):
                 self.completions.append([])
                 with open(jsonl_path.split(".")[0] + f"_seed_{k}.jsonl", "r") as f:
@@ -210,7 +211,7 @@ class JsonProgram(LLMGenerator):
             e["id"] = i
 
         if self.model.samples_per_task > 1:
-            self.completions = [[] * self.model.samples_per_task]
+            self.completions = []
             for k in range(self.model.samples_per_task):
                 self.completions.append([])
                 with open(jsonl_path.split(".")[0] + f"_seed_{k}.jsonl", "r") as f:
@@ -226,8 +227,7 @@ class JsonProgram(LLMGenerator):
     def solve(self, eval, sample_id=0):
         return self.completions[sample_id][eval["id"]]["completion"]
     
-@memory.cache
-def hf_complete(prompt, model, tokenizer, max_length=1024, eos_token=None) -> str:
+def hf_complete(prompt: str, model, tokenizer, max_length: int = 1024, eos_token: Optional[str] = None) -> str:
     inputs = tokenizer.encode(prompt, return_tensors="pt", add_special_tokens=True).to("cuda")
     outputs = model.generate(inputs, max_new_tokens=max_length, use_cache=True, do_sample=False, repetition_penalty=1.1)
     text_output = tokenizer.decode(outputs[0], skip_special_tokens=False)[len(prompt):]
@@ -293,7 +293,8 @@ class HuggingfaceInfill(LLMGenerator):
         
         try:
             procedure, working_storage = sol.split(self.middle_token)
-        except:
+        except (ValueError, AttributeError):
+            # Fallback if middle token not found in output
             procedure, working_storage = sol, "       WORKING-STORAGE SECTION.\n\n"
 
         program = f"{prefix}{working_storage}{suffix}{procedure}"
@@ -320,7 +321,81 @@ class HuggingfaceInfill(LLMGenerator):
         return prefix, suffix
 
 
-if __name__ == "__main__":
-    model = Model(name="gpt-4", samples_per_task=1)
+def run_openai(
+    model_name: str = "gpt-4",
+    samples_per_task: int = 1,
+    temperature: float = 0.0,
+) -> int:
+    """Run evaluation with OpenAI models."""
+    model = Model(name=model_name, samples_per_task=samples_per_task, temp=temperature)
     runner = OpenAIChat(model)
-    runner.eval()
+    return runner.eval()
+
+
+def run_huggingface(
+    model_name: str,
+    samples_per_task: int = 1,
+    tokenizer: Optional[str] = None,
+    eos_token: Optional[str] = None,
+) -> int:
+    """Run evaluation with Huggingface models (completion mode)."""
+    model = Model(
+        name=model_name,
+        samples_per_task=samples_per_task,
+        tokenizer=tokenizer,
+        eos_token=eos_token,
+    )
+    runner = HuggingfaceComplete(model)
+    return runner.eval()
+
+
+def run_huggingface_infill(
+    model_name: str,
+    samples_per_task: int = 1,
+    tokenizer: Optional[str] = None,
+    prefix_token: str = "<fim_prefix>",
+    suffix_token: str = "<fim_suffix>",
+    middle_token: str = "<fim_middle>",
+    eos_token: Optional[str] = None,
+) -> int:
+    """Run evaluation with Huggingface models (infill mode)."""
+    model = Model(
+        name=model_name,
+        samples_per_task=samples_per_task,
+        tokenizer=tokenizer,
+        prefix_token=prefix_token,
+        suffix_token=suffix_token,
+        middle_token=middle_token,
+        eos_token=eos_token,
+    )
+    runner = HuggingfaceInfill(model)
+    return runner.eval()
+
+
+def run_from_json(
+    jsonl_path: str,
+    model_name: str = "json-model",
+    samples_per_task: int = 1,
+    full_program: bool = False,
+) -> int:
+    """Run evaluation from pre-generated completions in JSONL format."""
+    model = Model(name=model_name, samples_per_task=samples_per_task)
+    if full_program:
+        runner = JsonProgram(model, jsonl_path)
+    else:
+        runner = JsonComplete(model, jsonl_path)
+    return runner.eval()
+
+
+def main() -> None:
+    """CLI entry point for COBOLEval generation."""
+    fire.Fire({
+        "openai": run_openai,
+        "huggingface": run_huggingface,
+        "huggingface-infill": run_huggingface_infill,
+        "json": run_from_json,
+    })
+
+
+if __name__ == "__main__":
+    main()

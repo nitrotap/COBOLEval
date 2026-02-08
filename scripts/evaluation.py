@@ -9,9 +9,8 @@ from typing import Dict, List, Union
 import numpy as np
 import tqdm
 from loguru import logger
-from utils import cleanup_file, cmd
-
-from data import HUMAN_EVAL, read_problems, stream_jsonl, write_jsonl
+from scripts.data import HUMAN_EVAL, read_problems, stream_jsonl, write_jsonl
+from scripts.utils import cleanup_file, cmd
 
 
 class ParseError(Exception):
