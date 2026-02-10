@@ -178,3 +178,24 @@ cache/
 preds/
 coboleval/
 *.dylib
+
+# COBOL artifacts
+*.cbl.lst
+*.TXT
+call_*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Secrets (don't commit credentials!)
+*.pem
+*.key
+credentials.json
