@@ -387,10 +387,55 @@ def run_from_json(
     return runner.eval()
 
 
+class OllamaChat(LLMGenerator):
+    """Generate COBOL completions using Ollama local models."""
+
+    def __init__(self, model: Model, ollama_host: Optional[str] = None):
+        import ollama
+        super().__init__(model)
+        self.client = ollama.Client(host=ollama_host) if ollama_host else ollama.Client()
+
+    def solve(self, eval, sample_id=0):
+        response = self.client.chat(
+            model=self.model.name,
+            messages=[
+                {
+                    "role": "system",
+                    "content": OPENAI_SYSTEM_PROMPT.format(eval["prompt"]),
+                }
+            ],
+            options={"temperature": self.model.temp},
+        )
+        sol = response["message"]["content"]
+        sol = extract_code_block(sol)
+        program = self.construct(eval["prompt"], sol)
+        return program
+
+    def construct(self, prompt: str, sol: str):
+        if sol.strip().startswith("WORKING-STORAGE SECTION."):
+            sol = sol.replace("WORKING-STORAGE SECTION.", "")
+
+        prog = f"{prompt}\n{sol}"
+        return swap_sections(prog)
+
+
+def run_ollama(
+    model_name: str = "granite3.1-dense:8b",
+    samples_per_task: int = 1,
+    temperature: float = 0.0,
+    host: Optional[str] = None,
+) -> int:
+    """Run evaluation with Ollama local models (e.g., granite3.1-dense:8b, qwen2.5-coder)."""
+    model = Model(name=model_name, samples_per_task=samples_per_task, temp=temperature)
+    runner = OllamaChat(model, ollama_host=host)
+    return runner.eval()
+
+
 def main() -> None:
     """CLI entry point for COBOLEval generation."""
     fire.Fire({
         "openai": run_openai,
+        "ollama": run_ollama,
         "huggingface": run_huggingface,
         "huggingface-infill": run_huggingface_infill,
         "json": run_from_json,
