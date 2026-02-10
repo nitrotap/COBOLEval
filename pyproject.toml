@@ -56,6 +56,7 @@ all = [
 [project.scripts]
 coboleval-generate = "scripts.generate:main"
 coboleval-evaluate = "scripts.evaluate_functional_correctness:main"
+coboleval-jcl = "scripts.jcl.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/bloopai/COBOLEval"
