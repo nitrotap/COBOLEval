@@ -24,7 +24,10 @@ def evaluate(
     Returns:
         Dictionary with pass@k results
     """
-    k_values = list(map(int, k.split(",")))
+    if isinstance(k, int):
+        k_values = [k]
+    else:
+        k_values = list(map(int, str(k).split(",")))
     results = evaluate_functional_correctness(pred_path, k_values, problem_file)
     print(results)
     return results

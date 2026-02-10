@@ -110,7 +110,7 @@ class LLMGenerator:
                     with open(path, "w+") as f:
                         f.write(program)
 
-                    compiles = cmd(f"cobc -fformat=variable {path}")
+                    compiles = cmd(f"cobc -m {path}")
                     if compiles:
                         self.compiled += 1
                         cleanup_dylib(name)

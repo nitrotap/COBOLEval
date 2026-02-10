@@ -96,7 +96,7 @@ def is_equal(result_type, result, true):
 
 
 def exec(name, path, call_path) -> bool:
-    if not cmd(f"cobc -w -fformat=variable -x {call_path} {path}"):
+    if not cmd(f"cobc -w -x {call_path} {path}"):
         logger.warning(f"Compile error for {path}")
         return False
 
@@ -110,9 +110,9 @@ def exec(name, path, call_path) -> bool:
     # Once you have read this disclaimer and taken appropriate precautions,
     # uncomment the following lines and proceed at your own risk:
 
-    # if not cmd(f"./call_{name}"):
-    #     logger.warning(f"Runtime error for {path}")
-    #     return False
+    if not cmd(f"./call_{name}"):
+        logger.warning(f"Runtime error for {path}")
+        return False
 
     return True
 
