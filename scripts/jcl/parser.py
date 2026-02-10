@@ -69,8 +69,9 @@ class JCLParser:
     """Parser for IBM JCL (Job Control Language)."""
 
     # JCL statement patterns
+    # Allow any length name (validator will check for >8 chars)
     STATEMENT_PATTERN = re.compile(
-        r'^//(\S{0,8})\s+(\S+)\s*(.*)?$'
+        r'^//(\S*)\s+(\S+)\s*(.*)?$'
     )
     COMMENT_PATTERN = re.compile(r'^//\*(.*)$')
     CONTINUATION_PATTERN = re.compile(r'^//\s{9,}(.*)$')
