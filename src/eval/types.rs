@@ -95,6 +95,26 @@ pub struct TestRunResult {
     pub error: Option<String>,
 }
 
+/// A single log entry capturing agent↔tool interaction
+#[derive(Debug, Clone, Serialize)]
+pub struct LogEntry {
+    pub timestamp: String,
+    pub entry_type: LogEntryType,
+    pub tool_name: Option<String>,
+    pub input: String,
+    pub output: String,
+}
+
+/// Type of log entry
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LogEntryType {
+    AgentPrompt,
+    ToolCall,
+    ToolResponse,
+    AgentResponse,
+}
+
 /// Mutable state for a task being worked on by the agent
 #[derive(Debug)]
 pub struct TaskState {
@@ -108,6 +128,7 @@ pub struct TaskState {
     pub last_compile_error: Option<String>,
     pub execute: bool,
     pub timeout_secs: u64,
+    pub conversation_log: Vec<LogEntry>,
 }
 
 /// Shared state across all tools

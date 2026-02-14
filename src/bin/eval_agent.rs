@@ -1,6 +1,6 @@
 use clap::Parser;
 use cobol_eval::eval::tools::{CompileSolution, GetTaskStatus, ReadTask, RunTests, SubmitSolution};
-use cobol_eval::eval::types::{CobolEval, Provider, SampleOutput, SharedState, TaskState};
+use cobol_eval::eval::types::{CobolEval, LogEntry, LogEntryType, Provider, SampleOutput, SharedState, TaskState};
 use cobol_eval::eval::metrics;
 use rig::completion::Prompt;
 use rig::prelude::*;
@@ -102,7 +102,35 @@ fn create_state(
         last_compile_error: None,
         execute,
         timeout_secs: timeout,
+        conversation_log: Vec::new(),
     }
+}
+
+fn now_iso() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| format!("{}.{:03}", d.as_secs(), d.subsec_millis()))
+        .unwrap_or_default()
+}
+
+/// Sanitize a task_id like "HumanEval/0" into a filename-safe string like "HumanEval_0"
+fn sanitize_task_id(task_id: &str) -> String {
+    task_id.replace('/', "_")
+}
+
+/// Write conversation log for a task to a JSONL file
+fn write_conversation_log(logs_dir: &PathBuf, task_id: &str, sample_k: usize, log: &[LogEntry]) -> anyhow::Result<()> {
+    let _ = fs::create_dir_all(logs_dir);
+    let filename = format!("{}__sample_{}.jsonl", sanitize_task_id(task_id), sample_k);
+    let path = logs_dir.join(filename);
+    let mut output = String::new();
+    for entry in log {
+        output.push_str(&serde_json::to_string(entry)?);
+        output.push('\n');
+    }
+    fs::write(&path, &output)?;
+    tracing::info!("Conversation log written to {:?} ({} entries)", path, log.len());
+    Ok(())
 }
 
 /// Run the eval loop with a specific provider client.
@@ -171,12 +199,59 @@ where
                 task.task_id
             );
 
+            // Log the agent prompt
+            {
+                let mut map = state.lock().unwrap();
+                if let Some(ts) = map.get_mut(&task.task_id) {
+                    ts.conversation_log.push(LogEntry {
+                        timestamp: now_iso(),
+                        entry_type: LogEntryType::AgentPrompt,
+                        tool_name: None,
+                        input: prompt.clone(),
+                        output: String::new(),
+                    });
+                }
+            }
+
             match agent.prompt(&prompt).await {
                 Ok(response) => {
                     tracing::info!("Agent response: {}", &response[..response.len().min(200)]);
+                    // Log the agent response
+                    let mut map = state.lock().unwrap();
+                    if let Some(ts) = map.get_mut(&task.task_id) {
+                        ts.conversation_log.push(LogEntry {
+                            timestamp: now_iso(),
+                            entry_type: LogEntryType::AgentResponse,
+                            tool_name: None,
+                            input: String::new(),
+                            output: response,
+                        });
+                    }
                 }
                 Err(e) => {
                     tracing::error!("Agent error for {}: {}", task.task_id, e);
+                    // Log the error as agent response
+                    let mut map = state.lock().unwrap();
+                    if let Some(ts) = map.get_mut(&task.task_id) {
+                        ts.conversation_log.push(LogEntry {
+                            timestamp: now_iso(),
+                            entry_type: LogEntryType::AgentResponse,
+                            tool_name: None,
+                            input: String::new(),
+                            output: format!("ERROR: {}", e),
+                        });
+                    }
+                }
+            }
+
+            // Write conversation log for this task/sample
+            {
+                let map = state.lock().unwrap();
+                if let Some(ts) = map.get(&task.task_id) {
+                    let logs_dir = args.output_dir.join("logs");
+                    if let Err(e) = write_conversation_log(&logs_dir, &task.task_id, sample_k, &ts.conversation_log) {
+                        tracing::error!("Failed to write conversation log for {}: {}", task.task_id, e);
+                    }
                 }
             }
 

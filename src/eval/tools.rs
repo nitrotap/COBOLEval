@@ -2,13 +2,20 @@ use crate::eval::checker;
 use crate::eval::cobol;
 use crate::eval::compiler;
 use crate::eval::runner;
-use crate::eval::types::{SharedState, TestResult};
+use crate::eval::types::{LogEntry, LogEntryType, SharedState, TestResult};
 use rig::completion::ToolDefinition;
 use rig::tool::Tool;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::fs;
 use std::time::Duration;
+
+fn now_iso() -> String {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| format!("{}.{:03}", d.as_secs(), d.subsec_millis()))
+        .unwrap_or_default()
+}
 
 // ============================================================================
 // Error type shared by all tools
@@ -57,18 +64,29 @@ impl Tool for ReadTask {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        let state = self.state.lock().map_err(|e| EvalToolError(e.to_string()))?;
+        let input_str = format!("task_id={}", args.task_id);
+        let mut state = self.state.lock().map_err(|e| EvalToolError(e.to_string()))?;
         let task_state = state
-            .get(&args.task_id)
+            .get_mut(&args.task_id)
             .ok_or_else(|| EvalToolError(format!("Task not found: {}", args.task_id)))?;
 
-        Ok(format!(
+        let output = format!(
             "Task: {}\nEntry Point: {}\nNumber of tests: {}\n\nCOBOL Prompt (complete the WORKING-STORAGE SECTION and PROCEDURE DIVISION):\n\n{}",
             task_state.task.task_id,
             task_state.task.entry_point,
             task_state.task.tests.len(),
             task_state.task.prompt
-        ))
+        );
+
+        task_state.conversation_log.push(LogEntry {
+            timestamp: now_iso(),
+            entry_type: LogEntryType::ToolCall,
+            tool_name: Some("read_task".to_string()),
+            input: input_str,
+            output: output.clone(),
+        });
+
+        Ok(output)
     }
 }
 
@@ -116,6 +134,7 @@ impl Tool for SubmitSolution {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let input_str = format!("task_id={}, cobol_code=<{} chars>", args.task_id, args.cobol_code.len());
         let mut state = self.state.lock().map_err(|e| EvalToolError(e.to_string()))?;
         let task_state = state
             .get_mut(&args.task_id)
@@ -142,10 +161,20 @@ impl Tool for SubmitSolution {
         task_state.current_solution = Some(full_program.clone());
         task_state.test_results.clear();
 
-        Ok(format!(
+        let output = format!(
             "Solution submitted (attempt {}/{}). File written to {:?}. Use compile_solution to check if it compiles.",
             task_state.attempts_used, task_state.max_attempts, solution_path
-        ))
+        );
+
+        task_state.conversation_log.push(LogEntry {
+            timestamp: now_iso(),
+            entry_type: LogEntryType::ToolCall,
+            tool_name: Some("submit_solution".to_string()),
+            input: format!("{}\n---\n{}", input_str, args.cobol_code),
+            output: output.clone(),
+        });
+
+        Ok(output)
     }
 }
 
@@ -188,6 +217,7 @@ impl Tool for CompileSolution {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let input_str = format!("task_id={}", args.task_id);
         let mut state = self.state.lock().map_err(|e| EvalToolError(e.to_string()))?;
         let task_state = state
             .get_mut(&args.task_id)
@@ -208,14 +238,24 @@ impl Tool for CompileSolution {
             Some(result.stderr.clone())
         };
 
-        if result.success {
-            Ok("Compilation successful! Use run_tests to execute test cases.".to_string())
+        let output = if result.success {
+            "Compilation successful! Use run_tests to execute test cases.".to_string()
         } else {
-            Ok(format!(
+            format!(
                 "Compilation FAILED. Compiler errors:\n\n{}",
                 result.stderr
-            ))
-        }
+            )
+        };
+
+        task_state.conversation_log.push(LogEntry {
+            timestamp: now_iso(),
+            entry_type: LogEntryType::ToolCall,
+            tool_name: Some("compile_solution".to_string()),
+            input: input_str,
+            output: output.clone(),
+        });
+
+        Ok(output)
     }
 }
 
@@ -258,6 +298,7 @@ impl Tool for RunTests {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
+        let input_str = format!("task_id={}", args.task_id);
         let mut state = self.state.lock().map_err(|e| EvalToolError(e.to_string()))?;
         let task_state = state
             .get_mut(&args.task_id)
@@ -333,7 +374,7 @@ impl Tool for RunTests {
             })
             .collect();
 
-        Ok(format!(
+        let output = format!(
             "Test Results: {}/{} passed, {}/{} compiled{}\n\n{}",
             passed_count,
             total,
@@ -345,7 +386,17 @@ impl Tool for RunTests {
                 ""
             },
             detail.join("\n")
-        ))
+        );
+
+        task_state.conversation_log.push(LogEntry {
+            timestamp: now_iso(),
+            entry_type: LogEntryType::ToolCall,
+            tool_name: Some("run_tests".to_string()),
+            input: input_str,
+            output: output.clone(),
+        });
+
+        Ok(output)
     }
 }
 
@@ -388,15 +439,16 @@ impl Tool for GetTaskStatus {
     }
 
     async fn call(&self, args: Self::Args) -> Result<Self::Output, Self::Error> {
-        let state = self.state.lock().map_err(|e| EvalToolError(e.to_string()))?;
+        let input_str = format!("task_id={}", args.task_id);
+        let mut state = self.state.lock().map_err(|e| EvalToolError(e.to_string()))?;
         let task_state = state
-            .get(&args.task_id)
+            .get_mut(&args.task_id)
             .ok_or_else(|| EvalToolError(format!("Task not found: {}", args.task_id)))?;
 
         let passed_count = task_state.test_results.iter().filter(|t| t.passed).count();
         let total = task_state.test_results.len();
 
-        Ok(format!(
+        let output = format!(
             "Task: {}\nAttempts: {}/{}\nHas solution: {}\nLast compile error: {}\nTest results: {}/{} passed",
             task_state.task.task_id,
             task_state.attempts_used,
@@ -405,6 +457,16 @@ impl Tool for GetTaskStatus {
             task_state.last_compile_error.as_deref().unwrap_or("None"),
             passed_count,
             total
-        ))
+        );
+
+        task_state.conversation_log.push(LogEntry {
+            timestamp: now_iso(),
+            entry_type: LogEntryType::ToolCall,
+            tool_name: Some("get_task_status".to_string()),
+            input: input_str,
+            output: output.clone(),
+        });
+
+        Ok(output)
     }
 }
