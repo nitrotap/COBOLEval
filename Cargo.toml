@@ -5,6 +5,14 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[[bin]]
+name = "transpiler"
+path = "src/main.rs"
+
+[[bin]]
+name = "eval_agent"
+path = "src/bin/eval_agent.rs"
+
 [dependencies]
 anyhow = "1.0.79"
 regex = "1.10.3"
@@ -12,3 +20,9 @@ serde = { version = "1.0.195", features = ["derive"] }
 serde_json = "1.0.111"
 tree-sitter = "0.20.10"
 tree-sitter-python = "0.20.4"
+rig-core = "0.30"
+tokio = { version = "1", features = ["full"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+clap = { version = "4", features = ["derive"] }
